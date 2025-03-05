@@ -26,21 +26,37 @@ ENV/
 env/
 
 # Logs
-logs/
 *.log
-
-# IDE files
-.idea/
-.vscode/
-*.swp
-*.swo
+*.log.*
+logs/
+logs/*.log
+logs/*.pid
 
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
-._*
 
-# Application specific
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+temp_recording.wav
+recording_*.wav
+
+# Additional project-specific files
 *.pid
-cursorrules 
+test_*.wav
+test_*.py
+debug_output.log
+transcriber.pid
+launcher.error.log
+transcriber.error.log
+cursorrules
+
+# Model files (should be downloaded by user)
+models/
+downloaded_models/ 
