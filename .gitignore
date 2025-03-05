@@ -60,3 +60,6 @@ cursorrules
 # Model files (should be downloaded by user)
 models/
 downloaded_models/ 
+# Project documentation and configuration
+instructions/
+cursorrules
