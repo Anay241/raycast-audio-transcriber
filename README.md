@@ -172,9 +172,19 @@ For advanced users:
 
 Logs are stored in the `logs` directory:
 - `transcriber.log`: Main application logs
-- `launcher.log`: Launch script logs
-- `launcher.error.log`: Launch error logs
+- `transcriber.error.log`: Launch error logs
 - `pid.txt`: Process ID file for the running application
+
+### Log Management
+
+The application includes automatic log management features:
+
+- **Log Rotation**: Logs are automatically rotated when they reach 5MB in size
+- **Backup Limitation**: Only 3 backup log files are kept for each log type
+- **Automatic Cleanup**: Logs are automatically cleaned up when the application exits
+- **Temporary File Cleanup**: Temporary audio files are removed during shutdown
+
+These features help prevent logs from consuming excessive disk space during long-term use.
 
 ## License
 

@@ -323,6 +323,23 @@ class AudioProcessor:
             logger.info("Unloading Whisper model")
             self.model_manager.unload_model()
         
+        # Clean up temporary audio files
+        try:
+            logger.info("Cleaning up temporary audio files")
+            import glob
+            from pathlib import Path
+            
+            # Find and remove temporary recording files
+            temp_files = glob.glob("temp_recording*.wav") + glob.glob("recording_*.wav")
+            for file_path in temp_files:
+                try:
+                    Path(file_path).unlink()
+                    logger.info(f"Deleted temporary audio file: {file_path}")
+                except Exception as e:
+                    logger.error(f"Error deleting temporary audio file {file_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error during audio file cleanup: {e}")
+        
         # Force garbage collection
         logger.info("Forcing garbage collection")
         gc.collect()

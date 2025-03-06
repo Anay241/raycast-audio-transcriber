@@ -12,6 +12,7 @@ import multiprocessing.resource_tracker
 import os
 from app.core.audio_processor import AudioProcessor
 from app.common.notifier import AudioNotifier
+from utils.logger import cleanup_logs
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -149,6 +150,16 @@ class AudioTranscriberApp(rumps.App):
         if hasattr(self, 'processor'):
             logger.info("Cleaning up audio processor")
             self.processor.cleanup()
+        
+        # Clean up log files
+        logger.info("Cleaning up log files")
+        # We need to flush the logs before cleanup to ensure all messages are written
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        
+        # Force cleanup of log files (will be executed after current logs are closed)
+        # We'll register this to happen at exit to ensure logs are closed first
+        atexit.register(cleanup_logs, force_cleanup=True)
         
         # Force garbage collection
         gc.collect()
