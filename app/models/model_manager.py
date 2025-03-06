@@ -552,50 +552,94 @@ class ModelManager:
             logger.debug("Model timeout reached")
             self.unload_model()
 
-    def unload_model(self) -> None:
-        """Unload the model from memory to free up resources."""
+    def unload_model(self) -> bool:
+        """
+        Unload the model from memory to free up resources.
+        
+        Returns:
+            bool: True if model was successfully unloaded, False otherwise
+        """
         logger.info("Unloading model from memory")
         
+        if self.model is None:
+            logger.info("No model loaded, nothing to unload")
+            return True
+        
         try:
-            # Only proceed if model is loaded
-            if self.model is not None:
-                # Keep a reference to the model before setting it to None
-                model_ref = self.model
-                self.model = None
-                
-                # Force garbage collection to clean up resources
-                gc.collect()
-                
-                # Explicitly clean up multiprocessing resources
-                try:
-                    # Check if resource_tracker exists and is running
-                    if hasattr(multiprocessing, 'resource_tracker') and multiprocessing.resource_tracker._resource_tracker:
-                        logger.info("Cleaning up multiprocessing resources")
-                        
-                        # Get all tracked resources
-                        if hasattr(multiprocessing.resource_tracker._resource_tracker, '_resources'):
-                            resources = multiprocessing.resource_tracker._resource_tracker._resources
-                            
-                            # Find and clean up semaphores
-                            for resource_type, resource_ids in list(resources.items()):
-                                if resource_type == 'semaphore':
-                                    logger.info(f"Found {len(resource_ids)} semaphore resources to clean")
-                                    for resource_id in list(resource_ids):
-                                        try:
-                                            # Unregister the semaphore
-                                            multiprocessing.resource_tracker.unregister(resource_id, 'semaphore')
-                                            logger.info(f"Unregistered semaphore: {resource_id}")
-                                        except Exception as e:
-                                            logger.error(f"Error unregistering semaphore {resource_id}: {e}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up multiprocessing resources: {e}")
-                
-                # Reset the last model access time
-                self.last_use_time = None
-                logger.info("Model unloaded successfully")
+            # Keep a reference to the model before setting it to None
+            model_ref = self.model
+            model_type = self.current_model
+            self.model = None
+            
+            # Track memory before and after cleanup
+            memory_before = psutil.virtual_memory().percent
+            
+            # Force garbage collection to clean up resources
+            gc.collect()
+            
+            # Explicitly clean up multiprocessing resources
+            mp_resources_cleaned = self._cleanup_multiprocessing_resources()
+            
+            # Force another garbage collection pass
+            gc.collect()
+            
+            # Check memory after cleanup
+            memory_after = psutil.virtual_memory().percent
+            memory_diff = memory_before - memory_after
+            
+            # Reset the last model access time
+            self.last_use_time = None
+            
+            logger.info(f"Model unloaded: {model_type}")
+            logger.info(f"Memory change after unloading: {memory_diff:.1f}% ({memory_before:.1f}% → {memory_after:.1f}%)")
+            
+            return True
         except Exception as e:
             logger.error(f"Error unloading model: {e}")
-            # Don't re-raise to avoid crashing during cleanup
+            return False  # Don't re-raise to avoid crashing during cleanup
+    
+    def _cleanup_multiprocessing_resources(self) -> bool:
+        """
+        Clean up multiprocessing resources that might be left by the model.
+        
+        Returns:
+            bool: True if cleanup was successful, False otherwise
+        """
+        try:
+            # Check if resource_tracker exists and is running
+            if not (hasattr(multiprocessing, 'resource_tracker') and 
+                   multiprocessing.resource_tracker._resource_tracker):
+                logger.debug("No multiprocessing resource tracker found")
+                return True
+                
+            logger.info("Cleaning up multiprocessing resources")
+            
+            # Get all tracked resources
+            if not hasattr(multiprocessing.resource_tracker._resource_tracker, '_resources'):
+                logger.debug("No resources found in resource tracker")
+                return True
+                
+            resources = multiprocessing.resource_tracker._resource_tracker._resources
+            
+            # Find and clean up semaphores
+            semaphore_count = 0
+            for resource_type, resource_ids in list(resources.items()):
+                if resource_type == 'semaphore':
+                    logger.info(f"Found {len(resource_ids)} semaphore resources to clean")
+                    for resource_id in list(resource_ids):
+                        try:
+                            # Unregister the semaphore
+                            multiprocessing.resource_tracker.unregister(resource_id, 'semaphore')
+                            logger.debug(f"Unregistered semaphore: {resource_id}")
+                            semaphore_count += 1
+                        except Exception as e:
+                            logger.error(f"Error unregistering semaphore {resource_id}: {e}")
+            
+            logger.info(f"Cleaned up {semaphore_count} multiprocessing semaphores")
+            return True
+        except Exception as e:
+            logger.error(f"Error cleaning up multiprocessing resources: {e}")
+            return False
 
     def get_system_info(self) -> Dict:
         """

@@ -19,6 +19,7 @@ import multiprocessing
 import multiprocessing.resource_tracker
 import signal
 import sys
+from pathlib import Path
 
 from app.models.model_manager import ModelManager
 from app.core.text_processor import process_text
@@ -181,7 +182,15 @@ class AudioProcessor:
         try:
             logger.info("Starting recording")
             self.ready_to_record = False  # Prevent multiple starts
-            self.frames = []  # Clear previous frames
+            
+            # Clear previous frames and ensure we're starting fresh
+            if hasattr(self, 'frames'):
+                self.frames.clear()
+            self.frames = []
+            
+            # Close any existing stream before creating a new one
+            self._close_stream()
+            
             self.is_recording = True
             
             # Update app state
@@ -196,13 +205,30 @@ class AudioProcessor:
                 callback=self.callback
             )
             self.stream.start()
+            logger.info("Audio stream started successfully")
             
         except Exception as e:
             logger.error(f"Error starting recording: {e}")
             self.is_recording = False
+            self._close_stream()  # Ensure stream is closed on error
             AudioNotifier.play_sound('error')
         finally:
             self.ready_to_record = True  # Ready for next recording
+
+    def _close_stream(self) -> None:
+        """Safely close the audio stream if it exists."""
+        try:
+            if hasattr(self, 'stream') and self.stream:
+                if hasattr(self.stream, 'active') and self.stream.active:
+                    logger.debug("Stopping active audio stream")
+                    self.stream.stop()
+                
+                logger.debug("Closing audio stream")
+                self.stream.close()
+                self.stream = None
+                logger.debug("Audio stream closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing audio stream: {e}")
 
     def callback(self, indata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags) -> None:
         """Callback for audio stream to collect frames."""
@@ -220,128 +246,261 @@ class AudioProcessor:
             logger.info("Stopping recording")
             self.is_recording = False
             
-            # Update app state to processing
+            # Stop the audio stream
+            self._close_stream()
+            
+            # Update app state
             self.app.set_state('processing')
             
-            # Play stop sound
+            # Play sound notification
             AudioNotifier.play_sound('stop')
             
-            # Stop and close the stream
-            if hasattr(self, 'stream'):
-                self.stream.stop()
-                self.stream.close()
-            
-            # Process the recorded audio if we have frames
-            if self.frames:
-                # Convert frames to a single array
-                audio_data = np.concatenate(self.frames, axis=0)
-                
-                # Start transcription in a separate thread to keep UI responsive
-                def transcribe_thread():
-                    try:
-                        # Transcribe the audio
-                        logger.info("Starting transcription")
-                        transcription = self.transcribe_audio(audio_data)
-                        
-                        if transcription:
-                            # Copy to clipboard
-                            pyperclip.copy(transcription)
-                            logger.info(f"Transcription successful: {transcription}")
-                            logger.info("Transcription copied to clipboard")
-                            
-                            # Set completed state
-                            self.app.set_state('completed')
-                        else:
-                            logger.warning("No transcription result")
-                            AudioNotifier.play_sound('error')
-                            self.app.set_state('idle')
-                    except Exception as e:
-                        logger.error(f"Error in transcription thread: {e}")
-                        AudioNotifier.play_sound('error')
-                        self.app.set_state('idle')
-                
-                # Start the transcription thread and track it
-                self.transcription_thread = Thread(target=transcribe_thread)
-                self.transcription_thread.daemon = True  # Make it a daemon thread
-                self.transcription_thread.start()
-                logger.debug("Transcription thread started")
-            else:
-                logger.warning("No audio frames captured")
+            # Check if we have any frames
+            if not self.frames:
+                logger.warning("No audio frames recorded")
                 self.app.set_state('idle')
+                return
                 
+            # Save audio to temporary file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            temp_filename = f"recording_{timestamp}.wav"
+            
+            # Process in a separate thread to keep UI responsive
+            def transcribe_thread():
+                try:
+                    # Save audio to file
+                    audio_data = self.save_audio(temp_filename)
+                    if audio_data is None:
+                        logger.error("Failed to save audio")
+                        self.app.set_state('idle')
+                        return
+                        
+                    # Transcribe audio
+                    transcription = self.transcribe_audio(audio_data)
+                    if transcription:
+                        # Process text (format, copy to clipboard)
+                        processed_text = process_text(transcription)
+                        pyperclip.copy(processed_text)
+                        
+                        # Play success sound
+                        AudioNotifier.play_sound('success')
+                        
+                        # Update app state
+                        self.app.set_state('completed')
+                        logger.info("Transcription completed and copied to clipboard")
+                    else:
+                        logger.error("Transcription failed")
+                        self.app.set_state('idle')
+                        AudioNotifier.play_sound('error')
+                except Exception as e:
+                    logger.error(f"Error in transcription thread: {e}")
+                    self.app.set_state('idle')
+                    AudioNotifier.play_sound('error')
+                finally:
+                    # Clean up temporary file
+                    try:
+                        if os.path.exists(temp_filename):
+                            os.remove(temp_filename)
+                            logger.debug(f"Removed temporary file: {temp_filename}")
+                    except Exception as e:
+                        logger.error(f"Error removing temporary file: {e}")
+            
+            # Start transcription in a separate thread
+            self.transcription_thread = Thread(target=transcribe_thread)
+            self.transcription_thread.daemon = True  # Allow app to exit even if thread is running
+            self.transcription_thread.start()
+            
         except Exception as e:
             logger.error(f"Error stopping recording: {e}")
-            AudioNotifier.play_sound('error')
             self.app.set_state('idle')
+            AudioNotifier.play_sound('error')
 
     def save_audio(self, filename: str) -> Optional[np.ndarray]:
-        """Save recorded audio to a WAV file."""
+        """
+        Save recorded audio to a WAV file.
+        
+        Args:
+            filename: The filename to save the audio to
+            
+        Returns:
+            The audio data as a numpy array, or None if saving failed
+        """
         if not self.frames:
             logger.warning("No audio frames to save")
             return None
             
+        # Create a full path for the file
         try:
-            # Combine all frames
-            audio_data = np.concatenate(self.frames, axis=0)
+            filepath = Path(filename)
             
-            # Save to WAV file
-            with wave.open(filename, 'wb') as wf:
-                wf.setnchannels(self.channels)
-                wf.setsampwidth(2)  # 16-bit audio
-                wf.setframerate(self.sample_rate)
-                wf.writeframes(audio_data.tobytes())
+            # Ensure parent directory exists
+            if filepath.parent != Path('.'):
+                filepath.parent.mkdir(parents=True, exist_ok=True)
                 
-            logger.info(f"Audio saved to {filename}")
+            logger.debug(f"Saving audio to {filepath.absolute()}")
+        except Exception as e:
+            logger.error(f"Error preparing file path: {e}")
+            return None
+            
+        # Combine all frames
+        try:
+            audio_data = np.concatenate(self.frames, axis=0)
+            logger.debug(f"Combined {len(self.frames)} frames, total samples: {len(audio_data)}")
+        except Exception as e:
+            logger.error(f"Error combining audio frames: {e}")
+            return None
+            
+        # Save to WAV file
+        wf = None
+        try:
+            wf = wave.open(str(filepath), 'wb')
+            wf.setnchannels(self.channels)
+            wf.setsampwidth(2)  # 16-bit audio
+            wf.setframerate(self.sample_rate)
+            wf.writeframes(audio_data.tobytes())
+            
+            logger.info(f"Audio saved to {filepath} ({os.path.getsize(filepath) / 1024:.1f} KB)")
             return audio_data
         except Exception as e:
             logger.error(f"Error saving audio: {e}")
             return None
+        finally:
+            # Ensure wave file is closed
+            if wf:
+                try:
+                    wf.close()
+                except Exception as e:
+                    logger.error(f"Error closing wave file: {e}")
 
     def cleanup(self):
         """Clean up resources when the application exits."""
         logger.info("Cleaning up AudioProcessor resources")
         
-        # Stop keyboard listener if active
-        if hasattr(self, 'listener') and self.listener:
-            logger.info("Stopping keyboard listener")
-            self.listener.stop()
+        # Track cleanup status for each resource type
+        cleanup_status = {
+            "keyboard_listener": False,
+            "audio_stream": False,
+            "transcription_thread": False,
+            "model": False,
+            "temp_files": False
+        }
         
-        # Stop audio stream if active
-        if hasattr(self, 'stream') and self.stream and self.stream.active:
-            logger.info("Stopping audio stream")
-            self.stream.stop()
-            self.stream.close()
+        # 1. Stop keyboard listener if active
+        try:
+            if hasattr(self, 'listener') and self.listener:
+                logger.info("Stopping keyboard listener")
+                self.listener.stop()
+                cleanup_status["keyboard_listener"] = True
+        except Exception as e:
+            logger.error(f"Error stopping keyboard listener: {e}")
         
-        # Stop transcription thread if active
-        if hasattr(self, 'transcription_thread') and self.transcription_thread and self.transcription_thread.is_alive():
-            logger.info("Waiting for transcription thread to complete")
-            # Give the thread a chance to complete naturally
-            self.transcription_thread.join(timeout=2.0)
+        # 2. Stop audio stream if active
+        try:
+            if hasattr(self, 'stream') and self.stream:
+                if hasattr(self.stream, 'active') and self.stream.active:
+                    logger.info("Stopping active audio stream")
+                    self.stream.stop()
+                
+                logger.info("Closing audio stream")
+                self.stream.close()
+                self.stream = None  # Remove reference to allow garbage collection
+                cleanup_status["audio_stream"] = True
+        except Exception as e:
+            logger.error(f"Error stopping audio stream: {e}")
         
-        # Unload model if loaded
-        if hasattr(self, 'model_manager') and self.model_manager:
-            logger.info("Unloading Whisper model")
-            self.model_manager.unload_model()
+        # 3. Stop transcription thread if active
+        try:
+            if hasattr(self, 'transcription_thread') and self.transcription_thread and self.transcription_thread.is_alive():
+                logger.info("Waiting for transcription thread to complete")
+                # Give the thread a chance to complete naturally
+                self.transcription_thread.join(timeout=2.0)
+                
+                # Check if thread is still alive after timeout
+                if self.transcription_thread.is_alive():
+                    logger.warning("Transcription thread did not complete within timeout")
+                else:
+                    logger.info("Transcription thread completed successfully")
+                    cleanup_status["transcription_thread"] = True
+            else:
+                cleanup_status["transcription_thread"] = True  # No thread to clean up
+        except Exception as e:
+            logger.error(f"Error handling transcription thread: {e}")
         
-        # Clean up temporary audio files
+        # 4. Unload model if loaded
+        try:
+            if hasattr(self, 'model_manager') and self.model_manager:
+                logger.info("Unloading Whisper model")
+                self.model_manager.unload_model()
+                
+                # Verify model was unloaded
+                if hasattr(self.model_manager, 'model') and self.model_manager.model is None:
+                    cleanup_status["model"] = True
+                    logger.info("Model unloaded successfully")
+                else:
+                    logger.warning("Model may not have been fully unloaded")
+        except Exception as e:
+            logger.error(f"Error unloading model: {e}")
+        
+        # 5. Clean up temporary audio files
         try:
             logger.info("Cleaning up temporary audio files")
             import glob
-            from pathlib import Path
             
-            # Find and remove temporary recording files
-            temp_files = glob.glob("temp_recording*.wav") + glob.glob("recording_*.wav")
-            for file_path in temp_files:
-                try:
-                    Path(file_path).unlink()
-                    logger.info(f"Deleted temporary audio file: {file_path}")
-                except Exception as e:
-                    logger.error(f"Error deleting temporary audio file {file_path}: {e}")
+            # Find all temporary recording files with absolute paths
+            temp_patterns = ["temp_recording*.wav", "recording_*.wav"]
+            temp_files = []
+            
+            for pattern in temp_patterns:
+                # Search in current directory
+                temp_files.extend(glob.glob(pattern))
+                
+                # Also search in the project directory if different
+                project_dir = Path(__file__).resolve().parent.parent.parent
+                if project_dir != Path.cwd():
+                    temp_files.extend(glob.glob(str(project_dir / pattern)))
+            
+            # Remove duplicates
+            temp_files = list(set(temp_files))
+            
+            if temp_files:
+                logger.info(f"Found {len(temp_files)} temporary audio files to clean up")
+                
+                for file_path in temp_files:
+                    try:
+                        Path(file_path).unlink()
+                        logger.info(f"Deleted temporary audio file: {file_path}")
+                    except Exception as e:
+                        logger.error(f"Error deleting temporary audio file {file_path}: {e}")
+                
+                cleanup_status["temp_files"] = True
+            else:
+                logger.info("No temporary audio files found to clean up")
+                cleanup_status["temp_files"] = True
         except Exception as e:
             logger.error(f"Error during audio file cleanup: {e}")
         
-        # Force garbage collection
-        logger.info("Forcing garbage collection")
-        gc.collect()
+        # 6. Clear any remaining audio frames to free memory
+        try:
+            if hasattr(self, 'frames') and self.frames:
+                logger.info(f"Clearing {len(self.frames)} audio frames from memory")
+                self.frames.clear()
+        except Exception as e:
+            logger.error(f"Error clearing audio frames: {e}")
         
-        logger.info("AudioProcessor cleanup completed") 
+        # 7. Force garbage collection
+        try:
+            logger.info("Forcing garbage collection")
+            gc.collect()
+        except Exception as e:
+            logger.error(f"Error during garbage collection: {e}")
+        
+        # Log cleanup summary
+        successful = sum(1 for status in cleanup_status.values() if status)
+        logger.info(f"AudioProcessor cleanup completed: {successful}/{len(cleanup_status)} resources cleaned successfully")
+        
+        # Log details of any failed cleanups
+        failed_resources = [resource for resource, status in cleanup_status.items() if not status]
+        if failed_resources:
+            logger.warning(f"Failed to clean up these resources: {', '.join(failed_resources)}")
+        
+        return successful == len(cleanup_status)  # Return True if all cleanups were successful 
