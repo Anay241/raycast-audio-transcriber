@@ -1,7 +1,7 @@
 #app/ui/menu_bar.py
 
 import logging
-import rumps
+import rumps # type: ignore
 import time
 import atexit
 import signal
@@ -13,6 +13,7 @@ import os
 from app.core.audio_processor import AudioProcessor
 from app.common.notifier import AudioNotifier
 from utils.logger import cleanup_logs
+from threading import Thread
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -76,9 +77,18 @@ class AudioTranscriberApp(rumps.App):
             logger.info("Exiting application")
             sys.exit(0)
         
-        # Register signal handlers
-        signal.signal(signal.SIGINT, handle_signal)  # Ctrl+C
+        # Register signal handlers for common termination signals
+        signal.signal(signal.SIGINT, handle_signal)   # Ctrl+C
         signal.signal(signal.SIGTERM, handle_signal)  # Termination request
+        
+        # Additional signals that can be caught on macOS
+        try:
+            signal.signal(signal.SIGHUP, handle_signal)   # Terminal closed
+            signal.signal(signal.SIGQUIT, handle_signal)  # Quit from keyboard (Ctrl+\)
+            logger.info("Additional signal handlers registered")
+        except (AttributeError, ValueError) as e:
+            # Some signals might not be available on all platforms
+            logger.warning(f"Could not register some signal handlers: {e}")
 
     def set_state(self, state):
         """Set the application state and update the icon."""
@@ -129,7 +139,7 @@ class AudioTranscriberApp(rumps.App):
         """Quit the application."""
         logger.info("Quitting application")
         
-        # Stop all processes
+        # Stop all processes and clean up resources
         self.stop()
         
         # Force garbage collection
@@ -137,7 +147,8 @@ class AudioTranscriberApp(rumps.App):
         gc.collect()
         
         # Give cleanup processes time to complete
-        time.sleep(0.5)
+        # This small delay ensures the cleanup thread has time to start
+        time.sleep(0.2)
         
         logger.info("Application shutdown complete")
         rumps.quit_application()
@@ -152,14 +163,33 @@ class AudioTranscriberApp(rumps.App):
             self.processor.cleanup()
         
         # Clean up log files
-        logger.info("Cleaning up log files")
+        logger.info("Preparing for log cleanup")
+        
         # We need to flush the logs before cleanup to ensure all messages are written
         for handler in logging.getLogger().handlers:
             handler.flush()
         
-        # Force cleanup of log files (will be executed after current logs are closed)
-        # We'll register this to happen at exit to ensure logs are closed first
-        atexit.register(cleanup_logs, force_cleanup=True)
+        # Direct cleanup approach for normal termination
+        # This ensures logs are cleaned up even if atexit handlers don't run
+        try:
+            # Import here to avoid circular imports
+            from utils.logger import cleanup_logs
+            
+            # Schedule the cleanup to happen after this function returns
+            # This allows the current log messages to be written
+            def delayed_cleanup():
+                # Small delay to ensure logs are fully written
+                time.sleep(0.1)
+                cleanup_logs(force_cleanup=True)
+                
+            # Start a thread to perform the cleanup after a short delay
+            # This is more reliable than atexit for menu bar apps that might be force-quit
+            cleanup_thread = Thread(target=delayed_cleanup, daemon=False)
+            cleanup_thread.start()
+            
+            logger.info("Log cleanup scheduled")
+        except Exception as e:
+            logger.error(f"Error scheduling log cleanup: {e}")
         
         # Force garbage collection
         gc.collect()
