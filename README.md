@@ -19,6 +19,22 @@ A macOS menu bar application that provides real-time audio transcription using W
 - At least 2GB of free disk space (for models)
 - Internet connection (for first-time model download)
 
+### Checking Requirements
+
+You can verify if your system meets all requirements by running:
+
+```bash
+python setup/check_requirements.py
+```
+
+This script will check:
+- Python version
+- Operating system
+- Available disk space
+- Required dependencies
+- Audio input devices
+- Permission requirements
+
 ## Installation
 
 1. Clone the repository:
@@ -37,6 +53,12 @@ A macOS menu bar application that provides real-time audio transcription using W
    ```bash
    pip install -r requirements.txt
    ```
+
+   This will install all necessary packages including:
+   - faster-whisper: For speech recognition
+   - sounddevice: For audio recording
+   - rumps: For macOS menu bar interface
+   - And other required dependencies
 
 4. Make the launch script executable:
    ```bash

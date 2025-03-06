@@ -1,0 +1,17 @@
+# Audio Transcriber Requirements
+# Core dependencies
+faster-whisper>=0.9.0  # For speech recognition
+sounddevice>=0.4.6     # For audio recording
+numpy>=1.24.0          # For audio processing
+pyperclip>=1.8.2       # For clipboard operations
+pynput>=1.7.6          # For keyboard shortcuts
+rumps>=0.4.0           # For macOS menu bar interface
+psutil>=5.9.0          # For system resource monitoring
+
+# Optional but recommended
+torch>=2.0.0           # For better performance with Whisper models
+torchaudio>=2.0.0      # For audio processing with PyTorch
+
+# Development dependencies (not required for users)
+# pytest>=7.0.0        # For testing
+# black>=23.0.0        # For code formatting 
